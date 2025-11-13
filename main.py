@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 import discord
-from discord import FFmpegPCMAudio
+from discord import FFmpegPCMAudio, opus
 from discord.ext import tasks
 from dotenv import load_dotenv
 
@@ -34,6 +34,21 @@ intents.members = True
 intents.guilds = True
 intents.voice_states = True
 intents.presences = True
+
+# --- ЯВНАЯ ЗАГРУЗКА OPUS --- #
+OPUS_LIB_NAMES = ("libopus.so.0", "libopus.so", "opus", "libopus")
+
+if not opus.is_loaded():
+    for name in OPUS_LIB_NAMES:
+        try:
+            opus.load_opus(name)
+            print(f"[INFO] Loaded Opus library: {name}")
+            break
+        except OSError:
+            continue
+
+if not opus.is_loaded():
+    print("[ERROR] Could not load Opus library, voice will not work.")
 
 bot = discord.Client(intents=intents)
 
@@ -124,7 +139,7 @@ async def play_file(channel: discord.VoiceChannel, path: str):
         source.cleanup()
         await asyncio.sleep(0.2)
 
-    except Exception as e:
+    except Exception:
         import traceback
         print("[ERROR] play_file exception:")
         traceback.print_exc()
