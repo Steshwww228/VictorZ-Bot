@@ -22,6 +22,8 @@ BASE_INTERVAL_MIN = int(os.getenv("BASE_INTERVAL_MIN", "5"))   # base interval i
 JITTER_SEC = int(os.getenv("JITTER_SEC", "90"))                # random jitter in seconds
 TEXT_CHANNEL_ID = int(os.getenv("TEXT_CHANNEL_ID", "0"))
 
+FFMPEG_PATH = os.getenv("FFMPEG_PATH", "ffmpeg")
+
 intents = discord.Intents.default()
 intents.members = True
 intents.guilds = True
@@ -85,7 +87,8 @@ async def play_file(channel: discord.VoiceChannel, path: str):
 
         print(f"[INFO] Playing sound: {path}")
         # ffmpeg must be available in PATH on the system
-        vc.play(FFmpegPCMAudio(path))
+        vc.play(FFmpegPCMAudio(path, executable=FFMPEG_PATH))
+
 
         # wait until the sound finishes
         while vc.is_playing():
@@ -256,3 +259,4 @@ if __name__ == "__main__":
     if not TOKEN:
         raise SystemExit("❌ Please set DISCORD_TOKEN in .env")
     bot.run(TOKEN)
+
