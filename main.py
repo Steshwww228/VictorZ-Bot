@@ -9,6 +9,8 @@ from discord import FFmpegPCMAudio
 from discord.ext import tasks
 from dotenv import load_dotenv
 
+# ----------------- CONFIG -----------------
+
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -18,11 +20,14 @@ JOIN_SOUND = os.getenv("JOIN_SOUND", "./sounds/join.mp3")
 LEAVE_SOUND = os.getenv("LEAVE_SOUND", "./sounds/leave.mp3")
 RANDOM_DIR = os.getenv("RANDOM_SOUNDS_DIR", "./sounds/random")
 
-BASE_INTERVAL_MIN = int(os.getenv("BASE_INTERVAL_MIN", "5"))   # base interval in minutes
-JITTER_SEC = int(os.getenv("JITTER_SEC", "90"))                # random jitter in seconds
+BASE_INTERVAL_MIN = int(os.getenv("BASE_INTERVAL_MIN", "5"))   # базовый интервал (мин)
+JITTER_SEC = int(os.getenv("JITTER_SEC", "90"))                # разброс (сек)
 TEXT_CHANNEL_ID = int(os.getenv("TEXT_CHANNEL_ID", "0"))
 
+# путь к ffmpeg; на Railway это просто "ffmpeg"
 FFMPEG_PATH = os.getenv("FFMPEG_PATH", "ffmpeg")
+
+# ----------------- DISCORD SETUP -----------------
 
 intents = discord.Intents.default()
 intents.members = True
@@ -38,6 +43,8 @@ voice_lock = asyncio.Lock()
 next_play_at: dict[int, float] = {}       # guild_id -> unix timestamp
 last_viktor_channel: dict[int, int] = {}  # guild_id -> last voice_channel_id for Viktor
 
+
+# ----------------- HELPERS -----------------
 
 def has_target_role(m: discord.Member) -> bool:
     """Check if member has the target role."""
@@ -57,20 +64,24 @@ def list_random_files() -> list[Path]:
     return files
 
 
-async def ensure_voice_client(channel: discord.VoiceChannel) -> discord.VoiceClient:
+async def ensure_voice_client(channel: discord.VoiceChannel) -> discord.VoiceClient | None:
     """
     Connect to the given voice channel (or move there if already connected).
     Does NOT disconnect automatically.
     """
-    vc = discord.utils.get(bot.voice_clients, guild=channel.guild)
-    if vc and vc.is_connected():
-        if vc.channel.id != channel.id:
-            print(f"[INFO] Moving bot to voice channel: {channel.name}")
-            await vc.move_to(channel)
-    else:
-        print(f"[INFO] Connecting bot to voice channel: {channel.name}")
-        vc = await channel.connect()
-    return vc
+    try:
+        vc = discord.utils.get(bot.voice_clients, guild=channel.guild)
+        if vc and vc.is_connected():
+            if vc.channel.id != channel.id:
+                print(f"[INFO] Moving bot to voice channel: {channel.name}")
+                await vc.move_to(channel)
+        else:
+            print(f"[INFO] Connecting bot to voice channel: {channel.name}")
+            vc = await channel.connect()
+        return vc
+    except Exception as e:
+        print(f"[ERROR] ensure_voice_client: {e}")
+        return None
 
 
 async def play_file(channel: discord.VoiceChannel, path: str):
@@ -81,21 +92,42 @@ async def play_file(channel: discord.VoiceChannel, path: str):
 
     try:
         vc = await ensure_voice_client(channel)
+        if not vc or not vc.is_connected():
+            print("[WARN] No active voice client to play on.")
+            return
 
         if vc.is_playing():
             vc.stop()
+            await asyncio.sleep(0.1)
 
         print(f"[INFO] Playing sound: {path}")
-        # ffmpeg must be available in PATH on the system
-        vc.play(FFmpegPCMAudio(path, executable=FFMPEG_PATH))
 
+        # Настройки ffmpeg – более дружелюбные к хостингу
+        source = FFmpegPCMAudio(
+            path,
+            executable=FFMPEG_PATH,
+            before_options="-nostdin",
+            options="-vn -loglevel panic",
+        )
 
-        # wait until the sound finishes
-        while vc.is_playing():
+        try:
+            vc.play(source)
+        except Exception as e:
+            print(f"[ERROR] vc.play failed: {repr(e)}")
+            source.cleanup()
+            return
+
+        # ждём окончания воспроизведения, пока соединение живо
+        while vc.is_connected() and vc.is_playing():
             await asyncio.sleep(0.3)
+
+        source.cleanup()
         await asyncio.sleep(0.2)
+
     except Exception as e:
-        print(f"[ERROR] play_file: {e}")
+        import traceback
+        print("[ERROR] play_file exception:")
+        traceback.print_exc()
 
 
 def schedule_next(guild_id: int):
@@ -128,6 +160,8 @@ async def disconnect_if_viktor_gone(guild: discord.Guild, delay: int = 10):
         next_play_at.pop(guild.id, None)  # reset random timer
 
 
+# ----------------- EVENTS -----------------
+
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user} ({bot.user.id})")
@@ -159,7 +193,7 @@ async def on_ready():
 async def on_voice_state_update(
     member: discord.Member,
     before: discord.VoiceState,
-    after: discord.VoiceState
+    after: discord.VoiceState,
 ):
     try:
         is_viktor = has_target_role(member)
@@ -204,6 +238,8 @@ async def on_voice_state_update(
     except Exception as e:
         print(f"[ERROR] on_voice_state_update: {e}")
 
+
+# ----------------- RANDOM LOOP -----------------
 
 @tasks.loop(seconds=30)
 async def random_loop():
@@ -255,8 +291,9 @@ async def before_loop():
     await bot.wait_until_ready()
 
 
+# ----------------- ENTRY POINT -----------------
+
 if __name__ == "__main__":
     if not TOKEN:
-        raise SystemExit("❌ Please set DISCORD_TOKEN in .env")
+        raise SystemExit("❌ Please set DISCORD_TOKEN in environment")
     bot.run(TOKEN)
-
