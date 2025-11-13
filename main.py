@@ -27,6 +27,33 @@ TEXT_CHANNEL_ID = int(os.getenv("TEXT_CHANNEL_ID", "0"))
 # путь к ffmpeg; на Railway это просто "ffmpeg"
 FFMPEG_PATH = os.getenv("FFMPEG_PATH", "ffmpeg")
 
+# ----------------- OPUS LOAD -----------------
+
+OPUS_LIB_NAMES = (
+    "libopus.so.0",
+    "libopus.so",
+    "opus",
+    "libopus",
+)
+
+if not opus.is_loaded():
+    loaded_name = None
+    for name in OPUS_LIB_NAMES:
+        try:
+            opus.load_opus(name)
+            loaded_name = name
+            print(f"[INFO] Loaded Opus library: {name}")
+            break
+        except OSError:
+            continue
+
+    if not opus.is_loaded():
+        print("[ERROR] Could not load Opus library, voice will not work.")
+    else:
+        print(f"[INFO] Opus is loaded from: {loaded_name}")
+else:
+    print("[INFO] Opus was already loaded.")
+
 # ----------------- DISCORD SETUP -----------------
 
 intents = discord.Intents.default()
@@ -34,21 +61,6 @@ intents.members = True
 intents.guilds = True
 intents.voice_states = True
 intents.presences = True
-
-# --- ЯВНАЯ ЗАГРУЗКА OPUS --- #
-OPUS_LIB_NAMES = ("libopus.so.0", "libopus.so", "opus", "libopus")
-
-if not opus.is_loaded():
-    for name in OPUS_LIB_NAMES:
-        try:
-            opus.load_opus(name)
-            print(f"[INFO] Loaded Opus library: {name}")
-            break
-        except OSError:
-            continue
-
-if not opus.is_loaded():
-    print("[ERROR] Could not load Opus library, voice will not work.")
 
 bot = discord.Client(intents=intents)
 
@@ -105,6 +117,10 @@ async def play_file(channel: discord.VoiceChannel, path: str):
         print(f"[WARN] Sound file not found: {path}")
         return
 
+    if not opus.is_loaded():
+        print("[ERROR] Cannot play sound: Opus is not loaded.")
+        return
+
     try:
         vc = await ensure_voice_client(channel)
         if not vc or not vc.is_connected():
@@ -117,7 +133,6 @@ async def play_file(channel: discord.VoiceChannel, path: str):
 
         print(f"[INFO] Playing sound: {path}")
 
-        # Настройки ffmpeg – более дружелюбные к хостингу
         source = FFmpegPCMAudio(
             path,
             executable=FFMPEG_PATH,
@@ -132,7 +147,6 @@ async def play_file(channel: discord.VoiceChannel, path: str):
             source.cleanup()
             return
 
-        # ждём окончания воспроизведения, пока соединение живо
         while vc.is_connected() and vc.is_playing():
             await asyncio.sleep(0.3)
 
@@ -172,7 +186,7 @@ async def disconnect_if_viktor_gone(guild: discord.Guild, delay: int = 10):
         vc = discord.utils.get(bot.voice_clients, guild=guild)
         if vc and vc.is_connected():
             await vc.disconnect(force=True)
-        next_play_at.pop(guild.id, None)  # reset random timer
+        next_play_at.pop(guild.id, None)
 
 
 # ----------------- EVENTS -----------------
@@ -181,7 +195,6 @@ async def disconnect_if_viktor_gone(guild: discord.Guild, delay: int = 10):
 async def on_ready():
     print(f"✅ Logged in as {bot.user} ({bot.user.id})")
 
-    # If the bot started while Viktor is already in a voice channel – join him.
     for guild in bot.guilds:
         viktor_member = None
         viktor_channel = None
@@ -213,11 +226,9 @@ async def on_voice_state_update(
     try:
         is_viktor = has_target_role(member)
 
-        # Track the last channel where Viktor was seen
         if after.channel and is_viktor:
             last_viktor_channel[member.guild.id] = after.channel.id
 
-        # Joined a new channel
         if after.channel and (before.channel is None or before.channel.id != after.channel.id):
             if is_viktor:
                 print(f"[INFO] Viktor joined voice channel: {after.channel.name}")
@@ -226,14 +237,11 @@ async def on_voice_state_update(
                     await play_file(after.channel, JOIN_SOUND)
                 schedule_next(member.guild.id)
 
-        # Left a channel or moved away from it
         if before.channel and (after.channel is None or after.channel.id != before.channel.id):
             if is_viktor:
                 print(f"[INFO] Viktor left voice channel: {before.channel.name}")
-                # Check if Viktor is completely gone from voice after a delay
                 bot.loop.create_task(disconnect_if_viktor_gone(member.guild, delay=10))
 
-                # Optional delayed notification or leave sound
                 async def delayed_leave_notice(guild: discord.Guild):
                     await asyncio.sleep(random.randint(20, 60))
                     if TEXT_CHANNEL_ID and TEXT_CHANNEL_ID != 0:
@@ -262,7 +270,6 @@ async def random_loop():
     try:
         now = time.time()
         for guild in bot.guilds:
-            # Find Viktor in any voice channel in this guild
             target_member = None
             target_channel = None
             for m in guild.members:
@@ -273,20 +280,16 @@ async def random_loop():
                     break
 
             if not target_member:
-                # Viktor is not in voice – skip this guild
                 continue
 
-            # Make sure the bot is in the same channel
             async with voice_lock:
                 await ensure_voice_client(target_channel)
 
-            # If timer is missing – schedule first random sound
             if guild.id not in next_play_at:
                 print(f"[DEBUG] No timer set for guild {guild.id}. Scheduling first random sound.")
                 schedule_next(guild.id)
                 continue
 
-            # Check if it's time to play a random sound
             if now >= next_play_at.get(guild.id, now + 999999):
                 files = list_random_files()
                 if files:
