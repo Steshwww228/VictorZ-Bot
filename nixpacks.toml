@@ -1,2 +1,2 @@
 [phases.setup]
-nixPkgs = ["ffmpeg", "opus"]
+nixPkgs = ["ffmpeg", "opus", "libsodium"]
